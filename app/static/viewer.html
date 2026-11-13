@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Карта</title>
+<style>
+:root{--sign:#0d2b45;--ink:#0d2b45;--paper:#eef1f4;--card:#fff;--mut:#5b6b7b;--ln:#cfd7de;--sig:#ffc233;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--sign:#16466e;--ink:#e8eef4;--paper:#0f1b27;--card:#17283a;--mut:#9fb0c0;--ln:#2b3f53}}
+*{box-sizing:border-box}
+body{margin:0;height:100dvh;display:flex;flex-direction:column;background:var(--paper);color:var(--ink);font:15px/1.4 "Frutiger","Segoe UI","Helvetica Neue",Arial,sans-serif;padding-top:env(safe-area-inset-top)}
+header{background:var(--sign);color:#fff;padding:10px 14px 0}
+h1{margin:0;font-size:19px}.sub{font-size:13px;color:var(--mut)}header .sub{color:#ffffffb3}
+#floors{display:flex;gap:6px;margin-top:10px;overflow-x:auto}
+#floors button{flex:none;width:54px;height:50px;border:0;border-radius:6px 6px 0 0;background:#ffffff26;color:#fff;font:700 24px/1 inherit;cursor:pointer}
+#floors button[aria-pressed=true]{background:var(--paper);color:var(--ink)}
+#note{display:none;background:var(--sig);color:#0d2b45;padding:8px 14px;font-weight:600}#note button{float:right;border:0;background:none;font-size:20px;line-height:1;cursor:pointer}
+#bar{display:flex;gap:10px;align-items:center;padding:8px 14px}
+#q{flex:1;min-width:0;padding:9px 11px;border:1px solid var(--ln);border-radius:8px;background:var(--card);color:inherit;font:inherit}
+#off{display:none;padding:4px 14px;font-size:13px;background:#b3261e;color:#fff}
+#wrap{position:relative;flex:1;min-height:0}#map{width:100%;height:100%;display:block;touch-action:none;background:#dfe5ea}
+#empty{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:20px;color:var(--mut)}
+#zoom{position:absolute;right:10px;top:10px;display:grid;gap:6px}
+#zoom button{width:40px;height:40px;border:1px solid var(--ln);border-radius:8px;background:var(--card);color:var(--ink);font-size:22px;cursor:pointer}
+#card{position:fixed;left:0;right:0;bottom:0;max-height:55dvh;overflow:auto;background:var(--card);border-top:4px solid var(--ink);padding:14px 14px calc(14px + env(safe-area-inset-bottom));transform:translateY(105%);transition:transform .2s}
+#card.on{transform:none}#card h2{margin:0 0 2px;font-size:18px}#card .x{float:right;border:0;background:none;color:inherit;font-size:26px;line-height:1;cursor:pointer}
+.act{padding:8px 0;border-top:1px solid var(--ln)}.act p{margin:4px 0}dl{margin:8px 0 0}dt{font-size:13px;color:var(--mut)}dd{margin:0 0 6px}
+.st{font-size:12px;padding:1px 7px;border-radius:9px;background:var(--ln)}.st.moved{background:var(--sig);color:#0d2b45}.st.cancelled{background:#b3261e;color:#fff}.st:empty{display:none}
+text{font-family:inherit;pointer-events:none}.pulse{animation:p 1s 4}@keyframes p{50%{opacity:.25}}
+:focus-visible{outline:3px solid var(--sig);outline-offset:1px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style></head><body>
+<header><h1 id="t">Карта</h1><div class="sub" id="s"></div><div id="floors"></div></header>
+<div id="note"></div><div id="off">Нет связи: показаны сохранённые данные, они могли устареть</div>
+<div id="bar"><input id="q" type="search" placeholder="Найти место или активность" aria-label="Поиск"><label><input id="now" type="checkbox"> сейчас</label></div>
+<div id="wrap"><svg id="map" role="img" aria-label="Карта площадки"></svg><div id="empty" hidden></div>
+<div id="zoom"><button id="zi" aria-label="Приблизить">+</button><button id="zo" aria-label="Отдалить">−</button></div></div>
+<aside id="card" aria-live="polite"></aside>
+<script>
+const slug=location.pathname.split('/')[2],Q=new URLSearchParams(location.search),TOK=Q.get('t'),AT=+Q.get('at')||0;
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const hm=t=>t?new Date(t).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}):'';
+const ST={planned:'',live:'идёт сейчас',moved:'переехала',cancelled:'отменена',done:'завершена'};
+let snap=null,prev=null,fid=0,sel=0,hot=new Set(),vb=null,vbKey=0,W=1000,H=700,first=true,drag=null;
+const ls={get:k=>{try{return localStorage.getItem(k)}catch{return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch{}},del:k=>{try{localStorage.removeItem(k)}catch{}}};
+const msg=t=>{$('#empty').textContent=t;$('#empty').hidden=false;$('#map').innerHTML=''};
+async function getSnap(rev){const k=`snap:${slug}:${rev}`,c=ls.get(k);if(c)return JSON.parse(c);
+ const r=await fetch(`/v/${slug}/snapshots/${rev}.json`);if(!r.ok)throw 0;const s=await r.json();
+ try{for(const x of Object.keys(localStorage))if(x.startsWith(`snap:${slug}:`))localStorage.removeItem(x)}catch{}
+ ls.set(k,JSON.stringify(s));return s}
+function cached(){try{const ks=Object.keys(localStorage).filter(x=>x.startsWith(`snap:${slug}:`));return ks.length?JSON.parse(ls.get(ks[0])):null}catch{return null}}
+async function load(){
+ try{let s;
+  if(TOK){const r=await fetch(`/v/${slug}/staff?token=${encodeURIComponent(TOK)}`);if(!r.ok)return msg('Неверная ссылка для своих');s=await r.json();if(snap&&JSON.stringify(s)===JSON.stringify(snap))return}
+  else{const r=await fetch(`/v/${slug}/head`,{cache:'no-cache'});if(!r.ok)return msg('Такого мероприятия нет');const h=await r.json();
+   if(!h.rev)return msg('Организаторы ещё не опубликовали карту');if(snap&&snap.rev===h.rev){$('#off').style.display='none';return}s=await getSnap(h.rev)}
+  $('#off').style.display='none';$('#empty').hidden=true;prev=snap;snap=s;diff();
+  if(first){first=false;const p=snap.places.find(p=>p.id===AT);if(p){fid=p.floor_id;sel=p.id}}
+  render()
+ }catch(e){const c=snap||cached();if(c){if(!snap){snap=c;render()}$('#off').style.display='block'}else msg('Нет связи. Проверьте интернет и обновите страницу')}
+}
+function diff(){hot=new Set();if(!prev)return;const o=new Map(prev.activities.map(a=>[a.id,a]));
+ for(const a of snap.activities){const b=o.get(a.id);if(!b||b.place_id!==a.place_id||b.status!==a.status){a.place_id&&hot.add(a.place_id);a.moved_from_id&&hot.add(a.moved_from_id)}}}
+function notice(){const n=snap.notices.at(-1),k='seen:'+slug,el=$('#note');
+ if(n&&n.id>+(ls.get(k)||0)){el.innerHTML=`<button aria-label="Закрыть">×</button>${esc(n.text)}`;el.style.display='block';el.querySelector('button').onclick=()=>{ls.set(k,n.id);el.style.display='none'}}else el.style.display='none'}
+function render(){
+ $('#t').textContent=snap.event.title;document.title=snap.event.title;$('#s').textContent=[snap.venue.name,snap.venue.address].filter(Boolean).join(', ');
+ if(!snap.floors.some(f=>f.id===fid)){const p=snap.places[0];fid=(snap.floors.find(f=>f.id===p?.floor_id)||snap.floors[0])?.id||0}
+ $('#floors').innerHTML=snap.floors.map(f=>`<button data-f="${f.id}" aria-pressed="${f.id===fid}" aria-label="${esc(f.name)}">${f.level}</button>`).join('');
+ notice();map();card()}
+function fit(){const r=$('#map').getBoundingClientRect(),k=r.width/r.height||1;let w=W,h=H,x=0,y=0;if(k>W/H){w=H*k;x=(W-w)/2}else{h=W/k;y=(H-h)/2}vb=[x,y,w,h]}
+function map(){
+ const f=snap.floors.find(x=>x.id===fid),M=$('#map');if(!f){M.innerHTML='';return}
+ W=f.width||1000;H=f.height||700;if(vbKey!==fid){fit();vbKey=fid}M.setAttribute('viewBox',vb.join(' '));
+ const u=W/500,T=Object.fromEntries(snap.types.map(t=>[t.id,t])),P=Object.fromEntries(snap.places.map(p=>[p.id,p]));
+ const q=$('#q').value.trim().toLowerCase(),now=$('#now').checked,t0=Date.now();
+ const by={};snap.activities.filter(a=>!now||(a.starts_at&&a.ends_at&&new Date(a.starts_at)<=t0&&t0<=new Date(a.ends_at))).forEach(a=>a.place_id&&(by[a.place_id]??=[]).push(a));
+ const match=p=>{if(!q&&!now)return true;const hit=!q||[p.name,...(by[p.id]||[]).map(a=>a.title)].join(' ').toLowerCase().includes(q);return hit&&(!now||!!by[p.id])};
+ const pts=g=>g.points.map(([x,y])=>`${x*W},${y*H}`).join(' '),ctr=g=>g.type==='point'?[g.x,g.y]:[g.points.reduce((a,p)=>a+p[0],0)/g.points.length,g.points.reduce((a,p)=>a+p[1],0)/g.points.length];
+ const shape=(g,c,sw,fo,extra='')=>g.type==='point'?`<circle cx="${g.x*W}" cy="${g.y*H}" r="${u*7}" fill="${fo?c:'none'}" stroke="${fo?'#fff':c}" stroke-width="${sw}" ${extra}/>`:g.type==='line'?`<polyline points="${pts(g)}" fill="none" stroke="${c}" stroke-width="${sw*2}" ${extra}/>`:`<polygon points="${pts(g)}" fill="${fo?c:'none'}" fill-opacity=".35" stroke="${c}" stroke-width="${sw}" ${extra}/>`;
+ let s=`<defs><marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0L8,4L0,8z" fill="#c98f00"/></marker></defs>`;
+ if(f.image)s+=`<image href="${f.image}" width="${W}" height="${H}"/>`;
+ for(const a of snap.activities){const o=P[a.moved_from_id],n=P[a.place_id];
+  if(a.status==='moved'&&o&&o.floor_id===fid){s+=shape(o.geometry,'#c98f00',u*2,0,`stroke-dasharray="${u*5} ${u*4}"`);
+   if(n&&n.floor_id===fid){const[x1,y1]=ctr(o.geometry),[x2,y2]=ctr(n.geometry);s+=`<line x1="${x1*W}" y1="${y1*H}" x2="${x2*W}" y2="${y2*H}" stroke="#c98f00" stroke-width="${u*2}" stroke-dasharray="${u*5} ${u*4}" marker-end="url(#ah)"/>`}}}
+ for(const p of snap.places.filter(p=>p.floor_id===fid)){const t=T[p.type_id];if(!t)continue;const[cx,cy]=ctr(p.geometry),on=p.id===sel;
+  s+=`<g data-p="${p.id}" style="opacity:${match(p)?1:.15}">`+(hot.has(p.id)?shape(p.geometry,'#ffc233',u*6,0,'class="pulse"'):'')+shape(p.geometry,on?'#0d2b45':t.color,u*(on?3:1.5),1)
+   +(p.name?`<text x="${cx*W}" y="${cy*H+(p.geometry.type==='point'?-u*11:u*3)}" font-size="${u*9}" text-anchor="middle" fill="#0d2b45" stroke="#fff" stroke-width="${u*2.5}" paint-order="stroke">${esc(p.name)}</text>`:'')+'</g>'}
+ const me=P[AT];if(me&&me.floor_id===fid){const[x,y]=ctr(me.geometry);s+=`<circle cx="${x*W}" cy="${y*H}" r="${u*14}" fill="none" stroke="#ffc233" stroke-width="${u*3}"/><text x="${x*W}" y="${y*H-u*18}" font-size="${u*10}" font-weight="700" text-anchor="middle" fill="#0d2b45" stroke="#ffc233" stroke-width="${u*3}" paint-order="stroke">Вы здесь</text>`}
+ M.innerHTML=s}
+const val=(f,v)=>f.type==='bool'?(v?'да':'нет'):f.type==='timerange'?`${hm(v.start)}–${hm(v.end)}`:f.type==='datetime'?new Date(v).toLocaleString('ru'):Array.isArray(v)?esc(v.join(', ')):f.type==='phone'?`<a href="tel:${esc(v)}">${esc(v)}</a>`:f.type==='url'?`<a href="${esc(v)}" rel="noopener">${esc(v)}</a>`:f.type==='email'?`<a href="mailto:${esc(v)}">${esc(v)}</a>`:esc(v);
+function card(){const el=$('#card'),p=snap.places.find(x=>x.id===sel);if(!p){el.classList.remove('on');return}
+ const t=snap.types.find(x=>x.id===p.type_id),cs=new Map(snap.contacts.map(c=>[c.id,c])),acts=snap.activities.filter(a=>a.place_id===p.id);
+ const rows=t.fields.filter(f=>p.props[f.key]!=null&&p.props[f.key]!=='').map(f=>`<dt>${esc(f.label)}</dt><dd>${val(f,p.props[f.key])}</dd>`).join('');
+ el.innerHTML=`<button class="x" aria-label="Закрыть" data-x>×</button><h2>${esc(p.name||t.name)}</h2><div class="sub">${esc(t.name)}${p.id===AT?'. Вы здесь':''}</div>`
+  +acts.map(a=>`<div class="act"><b>${esc(a.title)}</b> <span class="st ${a.status}">${ST[a.status]||''}</span><div class="sub">${hm(a.starts_at)}${a.ends_at?'–'+hm(a.ends_at):''}</div>${a.description?`<p>${esc(a.description)}</p>`:''}`
+   +a.contact_ids.map(i=>cs.get(i)).filter(Boolean).map(c=>`<div>${esc(c.name)}${c.role?', '+esc(c.role):''} ${c.phone?`<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>`:''}</div>`).join('')+'</div>').join('')+(rows?`<dl>${rows}</dl>`:'');
+ el.classList.add('on')}
+function pick(id){sel=id||0;map();card()}
+function zoom(k,e){const r=$('#map').getBoundingClientRect(),[x,y,w,h]=vb,px=e?(e.clientX-r.left)/r.width:.5,py=e?(e.clientY-r.top)/r.height:.5,nw=Math.min(Math.max(w*k,W/12),W*3),nh=nw*h/w;vb=[x+(w-nw)*px,y+(h-nh)*py,nw,nh];$('#map').setAttribute('viewBox',vb.join(' '))}
+const M=$('#map');
+M.addEventListener('wheel',e=>{e.preventDefault();zoom(e.deltaY<0?.85:1.18,e)},{passive:false});
+M.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,vb:[...vb],m:0};M.setPointerCapture(e.pointerId)};
+M.onpointermove=e=>{if(!drag)return;const r=M.getBoundingClientRect(),dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.m=Math.max(drag.m,Math.hypot(dx,dy));const[x,y,w,h]=drag.vb;vb=[x-dx*w/r.width,y-dy*h/r.height,w,h];M.setAttribute('viewBox',vb.join(' '))};
+M.onpointerup=e=>{const d=drag;drag=null;if(d&&d.m<6){const g=document.elementFromPoint(e.clientX,e.clientY)?.closest('[data-p]');pick(g?+g.dataset.p:0)}};
+$('#zi').onclick=()=>zoom(.7);$('#zo').onclick=()=>zoom(1.4);
+$('#floors').onclick=e=>{const b=e.target.closest('[data-f]');if(b){fid=+b.dataset.f;sel=0;render()}};
+$('#card').onclick=e=>{if(e.target.closest('[data-x]'))pick(0)};
+$('#q').oninput=$('#now').onchange=()=>snap&&map();
+$('#q').onkeydown=e=>{if(e.key!=='Enter'||!snap)return;const q=e.target.value.trim().toLowerCase();if(!q)return;
+ const hit=snap.places.find(p=>[p.name,...snap.activities.filter(a=>a.place_id===p.id).map(a=>a.title)].join(' ').toLowerCase().includes(q));if(hit){fid=hit.floor_id;sel=hit.id;render()}};
+load();
+if(!TOK&&window.EventSource)new EventSource(`/v/${slug}/stream`).addEventListener('rev',load);
+setInterval(load,20000+Math.random()*10000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)load()});
+</script></body></html>

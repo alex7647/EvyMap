@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Конструктор карт</title>
+<style>
+:root{--ink:#0d2b45;--paper:#eef1f4;--card:#fff;--ln:#cfd7de;--sig:#ffc233;--mut:#5b6b7b}
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 "Frutiger","Segoe UI","Helvetica Neue",Arial,sans-serif;color:var(--ink);background:var(--paper)}
+#app{display:grid;grid-template:auto 1fr/250px 1fr 340px;height:100dvh}
+header{grid-column:1/4;background:var(--ink);color:#fff;display:flex;gap:10px;align-items:center;padding:8px 12px}header b{font-size:16px;margin-right:6px}header span{flex:1}
+aside{background:var(--card);overflow:auto;padding:4px 12px 16px;border-right:1px solid var(--ln)}#R{border:0;border-left:1px solid var(--ln)}
+main{position:relative;min-height:0}#map{width:100%;height:100%;display:block;touch-action:none;background:#dfe5ea}#hint{position:absolute;left:10px;bottom:10px;background:var(--card);padding:5px 10px;border-radius:6px;border:1px solid var(--ln)}
+h3{margin:16px 0 6px;font-size:14px}button,select,input,textarea{font:inherit;color:inherit}
+button{border:1px solid var(--ln);background:var(--card);border-radius:6px;padding:5px 9px;cursor:pointer}button:hover{border-color:var(--ink)}button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+header button,header select{background:#ffffff26;color:#fff;border-color:#ffffff59}header option{color:#000}
+input,select,textarea{border:1px solid var(--ln);border-radius:6px;padding:5px 7px;background:var(--card);max-width:100%}
+label{display:block;margin:7px 0;font-size:13px;color:var(--mut)}label input:not([type=checkbox]),label select,label textarea{display:block;width:100%;color:var(--ink);margin-top:2px}
+.row{display:flex;gap:4px;margin:3px 0}.row>button:first-child{flex:1;text-align:left}.fr{display:grid;grid-template-columns:1fr 1fr;gap:3px;padding:6px 0;border-top:1px solid var(--ln)}
+i.c{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}.sub{color:var(--mut);font-size:12px}.act{padding:6px 0;border-top:1px solid var(--ln)}
+#msg{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:7px 14px;border-radius:8px;z-index:9}#msg:empty{display:none}#msg.bad{background:#b3261e}
+#auth{max-width:320px;margin:12vh auto;display:grid;gap:8px}:focus-visible{outline:3px solid var(--sig);outline-offset:1px}
+@media(max-width:900px){#app{grid-template:auto 55vh auto auto/1fr}header{grid-column:auto}aside{border:0}}
+</style></head><body>
+<form id="auth" data-s="login" hidden><h1>Конструктор карт</h1><input id="em" type="email" placeholder="E-mail" required autocomplete="username"><input id="pw" type="password" placeholder="Пароль, от 8 символов" required minlength="8" autocomplete="current-password"><input id="org" placeholder="Название организации (при регистрации)"><button>Войти</button><button type="button" data-a="register">Создать аккаунт</button></form>
+<div id="app" hidden>
+<header><b>Конструктор карт</b><select id="vsel" data-c="venueSel" aria-label="Площадка"></select><button data-a="newVenue">Новая площадка</button><span></span><button data-a="logout">Выйти</button></header>
+<aside id="L"></aside><main><svg id="map"></svg><div id="hint"></div></main><aside id="R"></aside></div>
+<div id="msg" role="status"></div>
+<script>
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const S={tk:localStorage.tk||'',venues:[],vid:0,fid:0,types:[],places:[],evs:[],eid:0,acts:[],contacts:[],tool:0,sel:0,draft:[],al:null,form:null};
+const venue=()=>S.venues.find(v=>v.id===S.vid),fl=()=>venue()?.floors.find(f=>f.id===S.fid),ev=()=>S.evs.find(e=>e.id===S.eid),ty=id=>S.types.find(t=>t.id===id);
+async function api(m,u,b,fd,h){const o={method:m,headers:{...(S.tk&&{Authorization:'Bearer '+S.tk}),...h}};
+ if(fd)o.body=fd;else if(b!==undefined){o.headers['Content-Type']='application/json';o.body=JSON.stringify(b)}
+ const r=await fetch('/api'+u,o);if(r.status===401&&S.tk){logout();throw{detail:'Войдите снова'}}
+ if(!r.ok)throw await r.json().catch(()=>({detail:r.statusText}));return r.status===204?null:r.json()}
+function say(t,bad){const m=$('#msg');m.textContent=t;m.className=bad?'bad':'';clearTimeout(say.t);say.t=setTimeout(()=>m.textContent='',5000)}
+const err=e=>say(e.errors?Object.entries(e.errors).map(([k,v])=>k+': '+v).join('; '):typeof e.detail==='string'?e.detail:e.detail?.message||'Что-то пошло не так',1);
+const A={};for(const [ev_,at] of [['click','a'],['change','c'],['submit','s']])document.addEventListener(ev_,async e=>{const b=e.target.closest(`[data-${at}]`);if(!b||!A[b.dataset[at]])return;if(at==='s')e.preventDefault();try{await A[b.dataset[at]](b,e)}catch(x){err(x)}});
+// ---------- вход
+const cred=()=>({email:$('#em').value,password:$('#pw').value});
+async function enter(k,b){const r=await api('POST','/auth/'+k,b);S.tk=localStorage.tk=r.access_token;await boot()}
+A.login=()=>enter('login',cred());A.register=()=>enter('register',{...cred(),org_name:$('#org').value||'Моя организация'});
+function logout(){S.tk='';localStorage.removeItem('tk');boot()}A.logout=logout;
+async function boot(){$('#auth').hidden=!!S.tk;$('#app').hidden=!S.tk;if(!S.tk)return;
+ S.types=await api('GET','/place-types');await refresh()}
+async function refresh(){S.venues=await api('GET','/venues');if(!venue())S.vid=S.venues[0]?.id||0;
+ const v=venue();$('#vsel').innerHTML=S.venues.map(x=>`<option value="${x.id}" ${x.id===S.vid?'selected':''}>${esc(x.name)}</option>`).join('');
+ if(!fl())S.fid=v?.floors[0]?.id||0;S.evs=v?await api('GET',`/venues/${v.id}/events`):[];if(!ev())S.eid=S.evs[0]?.id||0;
+ await loadFloor();await loadEvent();S.sel=0;draw()}
+const loadFloor=async()=>{S.places=S.fid?await api('GET',`/floors/${S.fid}/places`):[]};
+const loadEvent=async()=>{[S.acts,S.contacts]=S.eid?await Promise.all([api('GET',`/events/${S.eid}/activities`),api('GET',`/events/${S.eid}/contacts`)]):[[],[]]};
+const draw=()=>{left();drawMap();right()};
+A.venueSel=b=>{S.vid=+b.value;S.fid=0;S.eid=0;return refresh()};
+A.newVenue=async()=>{const name=prompt('Название площадки (например, ТЦ «Галерея»)');if(!name)return;S.vid=(await api('POST','/venues',{name})).id;S.fid=S.eid=0;await refresh()};
+A.addFloor=async()=>{const v=venue();if(!v)return say('Сначала создайте площадку',1);const name=prompt('Название этажа','1 этаж');if(!name)return;
+ const lv=prompt('Номер этажа (число)',String((v.floors.at(-1)?.level??0)+1));if(lv===null)return;S.fid=(await api('POST',`/venues/${v.id}/floors`,{level:+lv,name})).id;await refresh()};
+A.floor=async b=>{S.fid=+b.dataset.id;S.sel=0;S.draft=[];S.al=null;await loadFloor();draw()};
+A.photo=async b=>{const f=b.files[0];if(!f)return;const fd=new FormData();fd.append('file',f);await api('POST',`/floors/${S.fid}/base`,undefined,fd);b.value='';say('Фото загружено: при необходимости выровняйте по углам');await refresh()};
+A.align=async()=>{const r=await fetch(`/api/floors/${S.fid}/original`,{headers:{Authorization:'Bearer '+S.tk}});if(!r.ok)throw{detail:'Сначала загрузите фото плана'};
+ const url=URL.createObjectURL(await r.blob()),im=new Image();await new Promise(ok=>{im.onload=ok;im.src=url});S.al={url,w:im.naturalWidth,h:im.naturalHeight,c:[[.1,.1],[.9,.1],[.9,.9],[.1,.9]]};vbKey='';draw()};
+A.alignOk=async()=>{await api('POST',`/floors/${S.fid}/base/align`,{corners:S.al.c});S.al=null;vbKey='';say('План выровнен');await refresh()};
+A.alignNo=()=>{S.al=null;vbKey='';draw()};
+// ---------- левая панель
+function left(){const v=venue();$('#L').innerHTML=`<h3>Этажи</h3>${(v?.floors||[]).map(f=>`<div class="row"><button data-a="floor" data-id="${f.id}" class="${f.id===S.fid?'on':''}">${f.level}: ${esc(f.name)}</button></div>`).join('')||'<p class="sub">Этажей пока нет</p>'}
+<button data-a="addFloor">Добавить этаж</button>${S.fid?`<label class="sub">Фото плана этажа<input type="file" accept="image/*" data-c="photo"></label><button data-a="align">Выровнять по углам</button>`:''}
+<h3>Типы объектов</h3>${S.types.map(t=>`<div class="row"><button data-a="tool" data-id="${t.id}" class="${t.id===S.tool?'on':''}"><i class="c" style="background:${t.color}"></i>${esc(t.name)}</button><button data-a="editType" data-id="${t.id}" aria-label="Настроить поля типа «${esc(t.name)}»">Поля</button></div>`).join('')}<button data-a="newType">Новый тип</button>`}
+A.tool=b=>{const id=+b.dataset.id;S.tool=S.tool===id?0:id;S.draft=[];S.sel=0;S.form=null;draw()};
+// ---------- поля: форма по схеме
+const inp=(f,v)=>{const n='f_'+f.key,r=f.required?' required':'';v=v??'';
+ switch(f.type){case'longtext':return`<textarea name="${n}"${r}>${esc(v)}</textarea>`;
+ case'number':return`<input type="number" step="any" name="${n}" value="${esc(v)}"${r}>`;
+ case'bool':return`<input type="checkbox" name="${n}" ${v?'checked':''}>`;
+ case'select':return`<select name="${n}"${r}><option value="">—</option>${f.options.map(o=>`<option ${o===v?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+ case'multiselect':return`<select multiple name="${n}">${f.options.map(o=>`<option ${(v||[]).includes(o)?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+ case'datetime':return`<input type="datetime-local" name="${n}" value="${esc(String(v).slice(0,16))}">`;
+ case'timerange':return`<input type="datetime-local" name="${n}_s" value="${esc((v.start||'').slice(0,16))}"><input type="datetime-local" name="${n}_e" value="${esc((v.end||'').slice(0,16))}">`;
+ case'contact':return`<select name="${n}"><option value="">—</option>${S.contacts.map(c=>`<option value="${c.id}" ${c.id===v?'selected':''}>${esc(c.name)}</option>`).join('')}</select>`;
+ default:return`<input name="${n}" value="${esc(v)}"${r}>`}};
+const props=(fs,F)=>{const o={},g=k=>F.elements[k];for(const f of fs){const n='f_'+f.key;
+ if(f.type==='bool')o[f.key]=g(n).checked;else if(f.type==='timerange'){const s=g(n+'_s').value,e=g(n+'_e').value;if(s&&e)o[f.key]={start:s,end:e}}
+ else if(f.type==='multiselect')o[f.key]=[...g(n).selectedOptions].map(x=>x.value);
+ else{const v=g(n).value;if(v!=='')o[f.key]=['number','contact'].includes(f.type)?+v:v}}return o};
+const lab=f=>`<label>${esc(f.label)}${f.required?' *':''}${f.visible_to==='staff'?' (только для своих)':''}`;
+// ---------- карта
+let vb=null,vbKey='',W=1000,H=700,drag=null;const M=$('#map');
+function fit(){const r=M.getBoundingClientRect(),k=r.width/r.height||1;let w=W,h=H,x=0,y=0;if(k>W/H){w=H*k;x=(W-w)/2}else{h=W/k;y=(H-h)/2}vb=[x,y,w,h]}
+function drawMap(){const f=fl(),al=S.al;W=al?al.w:f?.base_w||1000;H=al?al.h:f?.base_h||700;
+ const key=al?'al':'f'+S.fid+(f?.base_image||'');if(key!==vbKey||!vb){fit();vbKey=key}M.setAttribute('viewBox',vb.join(' '));
+ const u=W/500,P=a=>a.map(([x,y])=>`${x*W},${y*H}`).join(' ');let s='';
+ if(al)s=`<image href="${al.url}" width="${W}" height="${H}"/><polygon points="${P(al.c)}" fill="#ffc23333" stroke="#ffc233" stroke-width="${u*1.5}"/>`+al.c.map(([x,y],i)=>`<circle data-h="${i}" cx="${x*W}" cy="${y*H}" r="${u*8}" fill="#ffc233" stroke="#0d2b45" stroke-width="${u*1.5}"/>`).join('');
+ else if(f){if(f.base_url)s+=`<image href="${f.base_url}" width="${W}" height="${H}"/>`;
+  for(const p of S.places){const t=ty(p.type_id),g=p.geometry;if(!t)continue;const on=p.id===S.sel,sw=u*(on?3:1.5),st=on?'#0d2b45':t.color,pt=g.type==='point',cx=pt?g.x:g.points.reduce((a,q)=>a+q[0],0)/g.points.length,cy=pt?g.y:g.points.reduce((a,q)=>a+q[1],0)/g.points.length;
+   s+=`<g data-p="${p.id}">`+(pt?`<circle cx="${g.x*W}" cy="${g.y*H}" r="${u*7}" fill="${t.color}" stroke="${on?st:'#fff'}" stroke-width="${sw}"/>`:g.type==='line'?`<polyline points="${P(g.points)}" fill="none" stroke="${st}" stroke-width="${u*3}"/>`:`<polygon points="${P(g.points)}" fill="${t.color}" fill-opacity=".35" stroke="${st}" stroke-width="${sw}"/>`)
+   +(p.name?`<text x="${cx*W}" y="${cy*H+(pt?-u*11:u*3)}" font-size="${u*9}" text-anchor="middle" fill="#0d2b45" stroke="#fff" stroke-width="${u*2.5}" paint-order="stroke" pointer-events="none">${esc(p.name)}</text>`:'')+'</g>'}
+  if(S.draft.length)s+=`<polyline points="${P(S.draft)}" fill="none" stroke="#0d2b45" stroke-width="${u*2}" stroke-dasharray="${u*4}"/>`+S.draft.map(([x,y])=>`<circle cx="${x*W}" cy="${y*H}" r="${u*3.5}" fill="#0d2b45"/>`).join('')}
+ M.innerHTML=s;const t=ty(S.tool);$('#hint').textContent=S.al?'Перетащите жёлтые точки на углы листа':t?(t.geometry_kind==='point'?'Кликните по карте, чтобы поставить объект':'Кликайте по углам. Enter или двойной клик завершают'):'Колесо мыши: масштаб. Перетаскивание: сдвиг'}
+const pt=e=>{const r=M.getBoundingClientRect();return[(vb[0]+(e.clientX-r.left)/r.width*vb[2])/W,(vb[1]+(e.clientY-r.top)/r.height*vb[3])/H]};
+M.addEventListener('wheel',e=>{e.preventDefault();const r=M.getBoundingClientRect(),[x,y,w,h]=vb,k=e.deltaY<0?.85:1.18,nw=Math.min(Math.max(w*k,W/12),W*3),nh=nw*h/w,px=(e.clientX-r.left)/r.width,py=(e.clientY-r.top)/r.height;vb=[x+(w-nw)*px,y+(h-nh)*py,nw,nh];M.setAttribute('viewBox',vb.join(' '))},{passive:false});
+M.onpointerdown=e=>{const h=e.target.dataset?.h;drag={x:e.clientX,y:e.clientY,vb:[...vb],m:0,h:h===undefined?null:+h};M.setPointerCapture(e.pointerId)};
+M.onpointermove=e=>{if(!drag)return;const r=M.getBoundingClientRect(),dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.m=Math.max(drag.m,Math.hypot(dx,dy));
+ if(drag.h!==null){const[x,y]=pt(e);S.al.c[drag.h]=[Math.min(1,Math.max(0,x)),Math.min(1,Math.max(0,y))];drawMap()}else{const[x,y,w,h]=drag.vb;vb=[x-dx*w/r.width,y-dy*h/r.height,w,h];M.setAttribute('viewBox',vb.join(' '))}};
+M.onpointerup=async e=>{const d=drag;drag=null;if(!d||d.h!==null||d.m>5)return;try{await tap(e)}catch(x){err(x)}};
+async function tap(e){if(S.al||!fl())return;const t=ty(S.tool),[x,y]=pt(e);
+ if(t){if(x<0||x>1||y<0||y>1)return;if(t.geometry_kind==='point')return make({type:'point',x,y});S.draft.push([x,y]);return drawMap()}
+ const g=document.elementFromPoint(e.clientX,e.clientY)?.closest('[data-p]');S.sel=g?+g.dataset.p:0;S.form=null;draw()}
+async function make(geometry){const p=await api('POST',`/floors/${S.fid}/places`,{type_id:S.tool,name:'',geometry});S.places.push(p);S.sel=p.id;S.tool=0;S.draft=[];draw()}
+async function finish(){const t=ty(S.tool);let d=S.draft;if(d.length>1&&Math.hypot(d.at(-1)[0]-d.at(-2)[0],d.at(-1)[1]-d.at(-2)[1])<.003)d=d.slice(0,-1);
+ if(!t||d.length<(t.geometry_kind==='line'?2:3))return;await make({type:t.geometry_kind,points:d})}
+M.ondblclick=()=>finish().catch(err);
+document.addEventListener('keydown',e=>{if(e.target.closest('input,textarea,select'))return;if(e.key==='Enter')finish().catch(err);if(e.key==='Escape'){S.draft=[];S.tool=0;S.form=null;draw()}});
+// ---------- правая панель: объект, тип, мероприятие
+function right(){const el=$('#R'),p=S.places.find(x=>x.id===S.sel);let h='';
+ if(S.al)h=`<h3>Выравнивание</h3><p>Совместите 4 точки с углами листа плана, чтобы план стал прямым.</p><button data-a="alignOk">Применить</button> <button data-a="alignNo">Отмена</button>`;
+ else if(S.form)h=typeForm(S.form.type);
+ else if(p){const t=ty(p.type_id);h=`<form data-s="savePlace"><h3>${esc(t.name)}</h3><label>Название<input name="name" value="${esc(p.name)}"></label>${t.fields.map(f=>lab(f)+inp(f,p.props[f.key])+'</label>').join('')}<button>Сохранить</button> <button type="button" data-a="delPlace">Удалить</button></form>`}
+ else h=ty(S.tool)?'':`<p class="sub">Выберите тип слева и нарисуйте объект на карте. Клик по объекту открывает его карточку.</p>`;
+ el.innerHTML=h+eventPanel()}
+A.savePlace=async F=>{const p=S.places.find(x=>x.id===S.sel),t=ty(p.type_id);
+ const n=await api('PATCH',`/places/${p.id}`,{name:F.elements.name.value,props:props(t.fields,F)},undefined,{'If-Match':String(p.version)});S.places[S.places.indexOf(p)]=n;say('Сохранено');draw()};
+A.delPlace=async()=>{if(!confirm('Удалить объект?'))return;await api('DELETE',`/places/${S.sel}`);S.places=S.places.filter(p=>p.id!==S.sel);S.sel=0;draw()};
+const KINDS=['text','longtext','phone','email','url','number','bool','select','multiselect','datetime','timerange','contact'];
+const row=f=>`<div class="fr"><input name="key" placeholder="ключ: latin_name" value="${esc(f?.key)}"><input name="label" placeholder="Название" value="${esc(f?.label)}"><select name="type">${KINDS.map(k=>`<option ${f?.type===k?'selected':''}>${k}</option>`).join('')}</select><select name="vis"><option value="public">видят все</option><option value="staff" ${f?.visible_to==='staff'?'selected':''}>только свои</option></select><input name="opts" placeholder="варианты через запятую" value="${esc((f?.options||[]).join(', '))}"><label><input type="checkbox" name="req" ${f?.required?'checked':''}> обязательное <button type="button" data-a="rmRow">Убрать</button></label></div>`;
+function typeForm(t){return`<form data-s="saveType"><h3>${t?'Тип объекта':'Новый тип'}</h3><label>Название<input name="name" required value="${esc(t?.name)}"></label><label>Форма<select name="kind" ${t?'disabled':''}>${['polygon','point','line'].map(k=>`<option value="${k}" ${t?.geometry_kind===k?'selected':''}>${{polygon:'зона',point:'точка',line:'линия'}[k]}</option>`).join('')}</select></label><label>Цвет<input type="color" name="color" value="${t?.color||'#1f6feb'}"></label><h3>Поля карточки</h3><div id="rows">${(t?.fields||[]).map(row).join('')}</div><button type="button" data-a="addRow">Добавить поле</button><p><button>Сохранить тип</button> ${t?'<button type="button" data-a="delType">Удалить</button>':''}</p></form>`}
+A.newType=()=>{S.form={type:null};S.tool=S.sel=0;draw()};A.editType=b=>{S.form={type:ty(+b.dataset.id)};S.tool=S.sel=0;draw()};
+A.addRow=()=>$('#rows').insertAdjacentHTML('beforeend',row());A.rmRow=b=>b.closest('.fr').remove();
+A.saveType=async F=>{const t=S.form.type,fields=[...F.querySelectorAll('.fr')].filter(r=>r.elements?.key?.value||r.querySelector('[name=key]').value).map(r=>{const g=n=>r.querySelector(`[name=${n}]`),o={key:g('key').value,label:g('label').value||g('key').value,type:g('type').value,visible_to:g('vis').value,required:g('req').checked};
+ if(['select','multiselect'].includes(o.type))o.options=g('opts').value.split(',').map(x=>x.trim()).filter(Boolean);return o});
+ const b={name:F.elements.name.value,geometry_kind:t?t.geometry_kind:F.elements.kind.value,color:F.elements.color.value,icon:t?.icon||'pin',layer:t?.layer||'default',fields};
+ await api(t?'PUT':'POST',t?`/place-types/${t.id}`:'/place-types',b);S.types=await api('GET','/place-types');S.form=null;say('Тип сохранён');draw()};
+A.delType=async()=>{if(!confirm('Удалить тип?'))return;await api('DELETE',`/place-types/${S.form.type.id}`);S.types=await api('GET','/place-types');S.form=null;draw()};
+// ---------- мероприятие
+const STAT={planned:'запланирована',live:'идёт',moved:'переехала',cancelled:'отменена',done:'завершена'};
+function eventPanel(){const e=ev(),v=venue();if(!v)return'';let h=`<h3>Мероприятие</h3><div class="row"><select data-c="evSel" aria-label="Мероприятие">${S.evs.map(x=>`<option value="${x.id}" ${x.id===S.eid?'selected':''}>${esc(x.title)}</option>`).join('')}</select><button data-a="newEvent">Новое</button></div>`;if(!e)return h;
+ const opts=sel=>`<option value="">без места</option>`+S.places.map(p=>`<option value="${p.id}" ${p.id===sel?'selected':''}>${esc(p.name||ty(p.type_id)?.name)}</option>`).join('');
+ h+=`<p class="sub">Опубликована ревизия ${e.head_rev}.</p><button data-a="publish" class="on">Опубликовать</button> <button data-a="notice">Объявление</button>
+ <p class="sub">Участникам: <a href="/v/${e.slug}" target="_blank">/v/${esc(e.slug)}</a><br>Для своих: <a href="/v/${e.slug}?t=${esc(e.staff_token)}" target="_blank">со скрытыми полями</a></p>
+ <h3>Активности</h3><p class="sub">Смена места сразу публикуется и отправляет участникам уведомление.</p>`
+ +S.acts.map(a=>`<div class="act"><b>${esc(a.title)}</b> <span class="sub">${STAT[a.status]}</span><div class="row"><select data-c="moveAct" data-id="${a.id}" aria-label="Место">${opts(a.place_id)}</select><select data-c="statAct" data-id="${a.id}" aria-label="Статус">${Object.entries(STAT).map(([k,t])=>`<option value="${k}" ${a.status===k?'selected':''}>${t}</option>`).join('')}</select><button data-a="delAct" data-id="${a.id}" aria-label="Удалить активность">×</button></div></div>`).join('')
+ +`<form data-s="addAct"><label>Новая активность<input name="title" required></label><label>Место<select name="place">${opts(0)}</select></label><label>Начало<input type="datetime-local" name="s"></label><label>Конец<input type="datetime-local" name="e"></label><button>Добавить</button></form>
+ <h3>Контакты</h3>`+S.contacts.map(c=>`<div class="row"><span style="flex:1">${esc(c.name)} <span class="sub">${esc(c.role)} ${esc(c.phone)}${c.visible_to==='staff'?' (свои)':''}</span></span><button data-a="delContact" data-id="${c.id}" aria-label="Удалить контакт">×</button></div>`).join('')
+ +`<form data-s="addContact"><label>Имя<input name="name" required></label><label>Роль<input name="role"></label><label>Телефон<input name="phone"></label><label><input type="checkbox" name="staff"> только для своих</label><button>Добавить контакт</button></form>`;return h}
+A.evSel=async b=>{S.eid=+b.value;await loadEvent();right()};
+A.newEvent=async()=>{const slug=prompt('Адрес карты: латиница, цифры, дефис (например, spring-fest)');if(!slug)return;const title=prompt('Название мероприятия');if(!title)return;
+ S.eid=(await api('POST',`/venues/${S.vid}/events`,{slug,title})).id;S.evs=await api('GET',`/venues/${S.vid}/events`);await loadEvent();right()};
+A.publish=async()=>{const r=await api('POST',`/events/${S.eid}/publish`,{note:''});S.evs=await api('GET',`/venues/${S.vid}/events`);say('Опубликовано: ревизия '+r.rev);right()};
+A.notice=async()=>{const text=prompt('Текст объявления для участников');if(!text)return;await api('POST',`/events/${S.eid}/notices`,{text});S.evs=await api('GET',`/venues/${S.vid}/events`);say('Объявление опубликовано');right()};
+const dt=v=>v||null;
+A.addAct=async F=>{await api('POST',`/events/${S.eid}/activities`,{title:F.elements.title.value,place_id:F.elements.place.value?+F.elements.place.value:null,starts_at:dt(F.elements.s.value),ends_at:dt(F.elements.e.value)});await loadEvent();right()};
+A.moveAct=async b=>{if(!b.value)return say('Чтобы убрать место, измените активность через API',1);await api('POST',`/activities/${b.dataset.id}/move`,{place_id:+b.value});S.evs=await api('GET',`/venues/${S.vid}/events`);await loadEvent();say('Перенесено и опубликовано');right()};
+A.statAct=async b=>{await api('PATCH',`/activities/${b.dataset.id}`,{status:b.value});await loadEvent();say('Статус изменён. Он появится у участников после публикации');right()};
+A.delAct=async b=>{if(!confirm('Удалить активность?'))return;await api('DELETE',`/activities/${b.dataset.id}`);await loadEvent();right()};
+A.addContact=async F=>{const e=F.elements;await api('POST',`/events/${S.eid}/contacts`,{name:e.name.value,role:e.role.value,phone:e.phone.value,visible_to:e.staff.checked?'staff':'public'});await loadEvent();right()};
+A.delContact=async b=>{await api('DELETE',`/contacts/${b.dataset.id}`);await loadEvent();right()};
+boot().catch(err);
+</script></body></html>
